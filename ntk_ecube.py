@@ -19,6 +19,7 @@ load_raw_binary_gain_chmap_nsec(name, number_of_channels, hstype,
                                 fs, nsec, nprobes=1)
 load_raw_binary_preprocessed(name, number_of_channels)
 load_digital_binary(name, t_only=0)
+light_dark_transition(datadir, l7ampm=0, lplot=0)
 '''
 
 try:
@@ -81,6 +82,12 @@ def load_raw_binary_gain_chmap(name, number_of_channels, hstype, nprobes=1,
 
     from neuraltoolkit import ntk_channelmap as ntkc
 
+    if isinstance(hstype, str):
+        hstype = [hstype]
+
+    assert len(hstype) == nprobes, \
+        'length of hstype not same as nprobes'
+
     # constants
     gain = np.float64(0.19073486328125)
 
@@ -119,6 +126,12 @@ def load_raw_binary_gain_chmap_nsec(name, number_of_channels, hstype,
     '''
 
     from neuraltoolkit import ntk_channelmap as ntkc
+
+    if isinstance(hstype, str):
+        hstype = [hstype]
+
+    assert len(hstype) == nprobes, \
+        'length of hstype not same as nprobes'
 
     # constants
     gain = np.float64(0.19073486328125)
@@ -218,7 +231,6 @@ def load_raw_binary_gain_chmap_range(rawfile, number_of_channels,
     gain = np.float64(0.19073486328125)
     d_bgc = np.array([])
 
-
     f = open(rawfile, 'rb')
 
     if lraw:
@@ -254,7 +266,7 @@ def load_raw_binary_gain_chmap_range(rawfile, number_of_channels,
 
 
 # Load Ecube Digital data
-def load_digital_binary(name, t_only=0):
+def load_digital_binary(name, t_only=0, lcheckdigi64=1):
 
     '''
     load ecube digital data
@@ -263,6 +275,14 @@ def load_digital_binary(name, t_only=0):
     data has to be 1 channel
     t_only  : if t_only=1, just return tr, timestamp
               (Default 0, returns timestamp and data)
+    lcheckdigi64 : Default 1, check for digital file with 64 channel
+              accidental recordings and correct -11->0 and -9->1
+              lcheckdigi64=0, no checks are done read the file and
+              return output.
+    lcheckdigi64 : Default 1, check for digital file with 64 channel
+             (atypical recordings) and correct values of -11 to 0 and -9 to 1
+             lcheckdigi64=0, no checks are done, just read the file and
+             returns timestamp and data
     tdig, ddig =load_digital_binary(digitalrawfile)
     '''
 
@@ -272,5 +292,182 @@ def load_digital_binary(name, t_only=0):
         f.close()
         return tr
     dr = np.fromfile(f, dtype=np.int64,  count=-1)
+    print("unique ", np.unique(dr))
     f.close()
-    return tr, dr
+
+    if lcheckdigi64:
+        # Fix for files with values -11 to -9
+        # Digital_64
+        if "Digital_64_Channels_int64_" in name:
+            val_list = np.unique(dr)
+            print("val_list ", val_list)
+            print("len ", len(val_list))
+            assert len(val_list) == 2, 'Error: digital files unkown values'
+
+            # convert -11 to 0 and -9 to 1
+            if -11 in val_list:
+                # print("Changing values")
+                dr[np.where(dr == -11)] = 0
+                dr[np.where(dr == -9)] = 1
+            else:
+                raise ValueError('Please check digital files')
+
+    # return tr, dr
+    return tr, np.int8(dr)
+
+
+def light_dark_transition(datadir, l7ampm=0, lplot=0):
+    '''
+    light_dark_transition
+    light_dark_transition(datadir, l7ampm=0, lplot=0)
+    datadir - location of digital light data
+    l7ampm - just check files around 7:00 am and 7:00 pm
+            (default 0, check all files), 1 check files only around 7:00 am/pm
+    lplot - plot light to dark transition points (default 0, noplot), 1 to plot
+    returns
+    transition_list - list contains
+                      [filename, index of light-dark transition, time]
+    transition_list = light_dark_transition('/media/bs003r/D1/d1_c1/',
+                                            l7ampm=0, lplot=0)
+
+    '''
+
+    import matplotlib.pyplot as plt
+    import os
+
+    # add flag to check just at time 07:30 and 19:30
+    if l7ampm:
+        sub_string = ["_19-", "_07-"]
+    else:
+        sub_string = ['Digital', 'Digital']
+
+    save_list = []
+
+    for f in np.sort(os.listdir(datadir)):
+        if sub_string[0] in f or sub_string[1] in f:
+            # print(f)
+
+            # load data
+            t, d1 = load_digital_binary(datadir+f)
+
+            # find unique values
+            unique_val = np.unique(d1)
+
+            # transition files has 0 and 1 values
+            if all(x in unique_val for x in [0, 1]):
+                # print(f, " ", np.unique(d1), " ", d1.shape)
+
+                # Find diff
+                d_diff = np.diff(d1)
+
+                # -1 light of
+                if -1 in d_diff:
+                    transition = np.where(np.diff(d1) == -1)[0][0]
+                # 1 for light on
+                elif 1 in d_diff:
+                    transition = np.where(np.diff(d1) == 1)[0][0]
+                # raise error
+                else:
+                    raise ValueError('Unkown Value, ntk_light_pulse')
+
+                # print("transition)
+
+                # add filename, transition index and time of the file
+                print("Filename", f, " index ",  transition, " time ", t[0])
+                save_list.append([f, transition, t[0]])
+
+                # plot
+                if lplot:
+                    plt.figure()
+                    plt.plot(d1[transition-1:transition+2], 'ro')
+
+    return save_list
+
+
+def make_binaryfiles_ecubeformat(t, d, filename, ltype=2):
+
+    '''
+    make_binaryfiles_ecubeformat
+    make_binaryfiles_ecubeformat(t, d, filename, ltype=2)
+    t -  time in nano seconds to be written to binary file
+    d - numpy array to be converted to binary file
+    filename - file name to write with path
+    ltype - digital files (default 2 digital files)
+            for rawdata files 1
+    returns
+
+    '''
+    import struct
+    import os
+
+    # check ltype is 1 or 2
+    assert 0 < ltype < 3, 'Unknown ltype'
+
+    # Exit if file exist already
+    if os.path.exists(filename):
+        raise FileExistsError('filename already exists')
+
+    if ltype == 2:
+        assert d.shape[0] == 1, 'Only supports 1-d array'
+        assert len(np.unique(d)) <= 2, 'Supports only 1 and 0'
+
+    # Open file to write
+    with open(filename, "wb") as binary_file:
+        # Write time
+        binary_file.write(struct.pack('L', t))
+
+        # Write data rawdata/digital
+        if ltype == 1:
+            binary_file.write(struct.pack('h'*d.size,
+                              *d.transpose().flatten()))
+        elif ltype == 2:
+            binary_file.write(struct.pack('q'*d.size,  *d.flatten()))
+        else:
+            raise ValueError('Unkown value')
+
+
+def visual_grating_transition(datadir):
+    '''
+    visual_grating_transition
+    visual_grating_transition(datadir)
+    datadir - location of digital gratings data
+    returns
+    transition_list - list contains
+                      [filename, index of grating transitions, time]
+    transition_list = visual_grating_transition('/media/bs003r/D1/d1_vg1/')
+
+    '''
+
+    import os
+
+    # check only Digital files
+    sub_string = ['Digital', 'Digital']
+
+    save_list = []
+
+    for f in np.sort(os.listdir(datadir)):
+        if sub_string[0] in f or sub_string[1] in f:
+            # print(f)
+
+            # load data
+            t, d1 = load_digital_binary(datadir+f)
+
+            # find unique values
+            unique_val = np.unique(d1)
+
+            # transition files has 0 and 1 values
+            if all(x in unique_val for x in [0, 1]):
+                # print(f, " ", np.unique(d1), " ", d1.shape)
+
+                # Find diff
+                d_diff = np.diff(d1)
+
+                # 1 for gratings on
+                if 1 in d_diff:
+                    transition = np.where(np.diff(d1) == 1)[0]
+
+                # add filename, transition index and time of the file
+                print("Filename", f, " index ",  transition, " time ", t[0])
+                save_list.append([f, transition, t[0]])
+
+    return save_list
